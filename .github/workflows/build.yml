@@ -25,22 +25,19 @@ jobs:
         with:
           node-version: 18
 
-      - name: Clean install dependencies
-        run: |
-          rm -rf node_modules
-          rm -f package-lock.json
-          npm install
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
 
       - name: Build web app
         run: npm run build
 
-      - name: Sync Capacitor
+      - name: Sync Capacitor Android
         run: npx cap sync android
 
-      - name: Build APK
+      - name: Build Debug APK
         run: cd android && ./gradlew assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-debug-apk
