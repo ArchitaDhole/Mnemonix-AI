@@ -1,6 +1,4 @@
-import { GoogleGenAI, Type } from "@google/genai";
-
-const apiKey = process.env.GEMINI_API_KEY || "";
+import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
 
 export interface MemoryResult {
   keywords: string[];
@@ -66,9 +64,17 @@ const SYSTEM_INSTRUCTION = `You are an AI memory assistant that converts study m
     - Mandatory short summary with keywords, pegs (if numbers exist), and recall hints. Keep it extremely short.`;
 
 export const generateMemoryTrick = async (text: string, history: ChatMessage[] = []): Promise<MemoryResult> => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.error("GEMINI_API_KEY is not set in the environment.");
+    throw new Error("API Key missing. Please check your environment variables.");
+  }
+  
   const ai = new GoogleGenAI({ apiKey });
   
-  const contents = history.map(msg => ({
+  // Limit history to last 5 messages to prevent context bloat
+  const limitedHistory = history.slice(-5);
+  const contents = limitedHistory.map(msg => ({
     role: msg.role,
     parts: [{ text: msg.content }]
   }));
@@ -78,68 +84,103 @@ export const generateMemoryTrick = async (text: string, history: ChatMessage[] =
     parts: [{ text: text }]
   });
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents,
-    config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-          wordSoundBreaking: {
-            type: Type.ARRAY,
-            items: {
+  console.log("Generating memory trick for:", text);
+
+  try {
+    // Implement a real timeout using Promise.race
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("TIMEOUT")), 60000) // Increased to 60 seconds
+    );
+
+    const generatePromise = ai.models.generateContent({
+      model: "gemini-3.1-flash-lite-preview", // Switched to lite for lower latency
+      contents,
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION,
+        responseMimeType: "application/json",
+        // ThinkingLevel.MINIMAL is default for lite, which is fastest
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+            wordSoundBreaking: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  word: { type: Type.STRING },
+                  parts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  visual: { type: Type.STRING }
+                }
+              }
+            },
+            memoryStory: { type: Type.STRING },
+            revisionSummary: {
               type: Type.OBJECT,
               properties: {
-                word: { type: Type.STRING },
-                parts: { type: Type.ARRAY, items: { type: Type.STRING } },
-                visual: { type: Type.STRING }
+                keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                pegsUsed: { type: Type.ARRAY, items: { type: Type.STRING } },
+                recallHints: { type: Type.ARRAY, items: { type: Type.STRING } }
+              }
+            },
+            visualDescriptions: { type: Type.ARRAY, items: { type: Type.STRING } },
+            shouldGenerateImage: { type: Type.BOOLEAN },
+            methodUsed: { type: Type.STRING, enum: ["linking", "palace", "formula", "graph"] },
+            subject: { type: Type.STRING },
+            formulaInfo: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                meaning: { type: Type.STRING },
+                usage: { type: Type.STRING },
+                graphShape: { type: Type.STRING }
               }
             }
           },
-          memoryStory: { type: Type.STRING },
-          revisionSummary: {
-            type: Type.OBJECT,
-            properties: {
-              keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-              pegsUsed: { type: Type.ARRAY, items: { type: Type.STRING } },
-              recallHints: { type: Type.ARRAY, items: { type: Type.STRING } }
-            }
-          },
-          visualDescriptions: { type: Type.ARRAY, items: { type: Type.STRING } },
-          shouldGenerateImage: { type: Type.BOOLEAN },
-          methodUsed: { type: Type.STRING, enum: ["linking", "palace", "formula", "graph"] },
-          subject: { type: Type.STRING },
-          formulaInfo: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              meaning: { type: Type.STRING },
-              usage: { type: Type.STRING },
-              graphShape: { type: Type.STRING }
-            }
-          }
-        },
-        required: ["keywords", "memoryStory", "revisionSummary", "visualDescriptions", "shouldGenerateImage", "methodUsed"]
+          required: ["keywords", "memoryStory", "revisionSummary", "visualDescriptions", "shouldGenerateImage", "methodUsed"]
+        }
       }
-    }
-  });
+    });
 
-  return JSON.parse(response.text || "{}");
+    const response = await Promise.race([generatePromise, timeoutPromise]) as any;
+
+    const rawText = response.text || "";
+    if (!rawText) throw new Error("Empty response from AI");
+
+    console.log("AI Response received successfully.");
+    const jsonText = rawText.replace(/```json\n?|```/g, "").trim();
+    return JSON.parse(jsonText);
+  } catch (error: any) {
+    if (error.message === 'TIMEOUT') {
+      console.error("Gemini API request timed out after 60s");
+      throw new Error("The AI is taking too long to respond. Please try a shorter text or try again.");
+    }
+    console.error("Gemini API Error:", error);
+    throw error;
+  }
 };
 
 export const generateChatTitle = async (text: string): Promise<string> => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return "New Chat";
+  
   const ai = new GoogleGenAI({ apiKey });
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `Generate a very short (2-4 words) title for a chat about: ${text}. Return only the title text.`
-  });
-  return response.text?.trim() || "New Chat";
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Generate a very short (2-4 words) title for a chat about: ${text}. Return only the title text.`,
+      config: { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+    });
+    return response.text?.trim() || "New Chat";
+  } catch {
+    return "New Chat";
+  }
 };
 
 export const generateVisualImage = async (story: string, description: string): Promise<string | null> => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  
   const ai = new GoogleGenAI({ apiKey });
   
   try {

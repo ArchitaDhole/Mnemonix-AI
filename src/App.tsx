@@ -10,7 +10,8 @@ import {
   ListChecks,
   Zap,
   Plus,
-  Trash2
+  Trash2,
+  Download
 } from "lucide-react";
 import { 
   generateMemoryTrick, 
@@ -24,34 +25,50 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showPegs, setShowPegs] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [apiKeyMissing, setApiKeyMissing] = useState(false);
+
+  useEffect(() => {
+    if (!process.env.GEMINI_API_KEY) {
+      setApiKeyMissing(true);
+    }
+  }, []);
+
+  const MAX_CHARS = 2000;
 
   // Scroll to bottom on new messages
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, loading, error]);
 
-  const handleGenerate = async () => {
-    if (!input.trim() || loading) return;
+  const handleGenerate = async (retryText?: string) => {
+    const textToUse = retryText || input;
+    if (!textToUse.trim() || loading) return;
 
-    const userMsg: ChatMessage = { role: "user", content: input };
-    setMessages(prev => [...prev, userMsg]);
-    setInput("");
+    if (!retryText) {
+      const userMsg: ChatMessage = { role: "user", content: textToUse };
+      setMessages(prev => [...prev, userMsg]);
+      setInput("");
+    }
+    
     setLoading(true);
+    setError(null);
 
     try {
-      const res = await generateMemoryTrick(input, messages);
+      const res = await generateMemoryTrick(textToUse, messages);
       const modelMsg: ChatMessage = { 
         role: "model", 
-        content: `Memory trick for: ${input}`, 
+        content: `Memory trick for: ${textToUse.substring(0, 30)}${textToUse.length > 30 ? "..." : ""}`, 
         result: res 
       };
       setMessages(prev => [...prev, modelMsg]);
-    } catch (error) {
-      console.error("Generation failed", error);
+    } catch (err: any) {
+      console.error("Generation failed", err);
+      setError(err.message || "I encountered an error while building your trick. Please try again or simplify your text.");
     } finally {
       setLoading(false);
     }
@@ -77,6 +94,12 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {apiKeyMissing && (
+            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg text-[10px] font-bold animate-pulse">
+              <Zap size={12} />
+              API KEY MISSING
+            </div>
+          )}
           <button 
             onClick={() => setShowPegs(true)}
             className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition-all"
@@ -143,6 +166,23 @@ export default function App() {
             </div>
           </div>
         )}
+        {error && (
+          <div className="flex flex-col items-center gap-3">
+            <div className="bg-red-50 text-red-600 px-6 py-3 rounded-2xl border border-red-100 text-sm font-medium flex items-center gap-2 shadow-sm">
+              <Zap size={16} />
+              {error}
+            </div>
+            <button 
+              onClick={() => {
+                const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+                if (lastUserMsg) handleGenerate(lastUserMsg.content);
+              }}
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-700 underline underline-offset-4"
+            >
+              Try again
+            </button>
+          </div>
+        )}
       </main>
 
       {/* Input Area */}
@@ -150,7 +190,7 @@ export default function App() {
         <div className="max-w-4xl mx-auto relative">
           <textarea 
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => setInput(e.target.value.slice(0, MAX_CHARS))}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -161,8 +201,11 @@ export default function App() {
             className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 pr-16 text-sm focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all min-h-[60px] max-h-[200px] resize-none"
             rows={1}
           />
+          <div className="absolute right-16 bottom-4 text-[10px] font-bold text-slate-300">
+            {input.length}/{MAX_CHARS}
+          </div>
           <button 
-            onClick={handleGenerate}
+            onClick={() => handleGenerate()}
             disabled={loading || !input.trim()}
             className="absolute right-3 bottom-3 p-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-indigo-200"
           >
@@ -238,6 +281,85 @@ function MemoryTrickCard({ result }: { result: MemoryResult }) {
     } finally {
       setImageLoading(false);
     }
+  };
+
+  const handleDownload = async () => {
+    if (!generatedImage) return;
+    
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = generatedImage;
+    
+    await new Promise((resolve) => {
+      img.onload = resolve;
+    });
+
+    // Set canvas size (Image + Text area)
+    const textWidth = 400;
+    canvas.width = img.width + textWidth;
+    canvas.height = img.height;
+
+    // Draw background
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw image
+    ctx.drawImage(img, 0, 0);
+
+    // Draw text area background
+    ctx.fillStyle = "#eef2ff"; // indigo-50
+    ctx.fillRect(img.width, 0, textWidth, canvas.height);
+
+    // Draw Header
+    ctx.fillStyle = "#4f46e5"; // indigo-600
+    ctx.font = "bold 20px sans-serif";
+    ctx.fillText("MNEMONIX AI", img.width + 40, 50);
+
+    // Draw Title
+    ctx.fillStyle = "#1e293b"; // slate-800
+    ctx.font = "bold 24px sans-serif";
+    ctx.fillText("Memory Story", img.width + 40, 90);
+
+    // Draw Story Text
+    ctx.fillStyle = "#312e81"; // indigo-900
+    ctx.font = "italic 18px sans-serif";
+    
+    const words = result.memoryStory.split(" ");
+    let line = "";
+    let y = 130;
+    const maxWidth = textWidth - 80;
+    const lineHeight = 28;
+
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + " ";
+      const metrics = ctx.measureText(testLine);
+      const testWidth = metrics.width;
+      if (testWidth > maxWidth && n > 0) {
+        ctx.fillText(line, img.width + 40, y);
+        line = words[n] + " ";
+        y += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line, img.width + 40, y);
+
+    // Draw Method
+    y += 40;
+    ctx.fillStyle = "#6366f1"; // indigo-500
+    ctx.font = "bold 14px sans-serif";
+    ctx.fillText(`METHOD: ${result.methodUsed.toUpperCase()}`, img.width + 40, y);
+
+    // Download
+    const dataUrl = canvas.toDataURL("image/png");
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = `mnemonix-trick-${Date.now()}.png`;
+    link.click();
   };
 
   return (
@@ -330,9 +452,28 @@ function MemoryTrickCard({ result }: { result: MemoryResult }) {
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="mt-6 rounded-2xl overflow-hidden shadow-xl border-4 border-white"
+              className="mt-6 rounded-2xl overflow-hidden shadow-xl border-4 border-white bg-white flex flex-col md:flex-row"
             >
-              <img src={generatedImage} alt="Memory Trick" className="w-full h-auto" referrerPolicy="no-referrer" />
+              <div className="flex-1 relative group">
+                <img src={generatedImage} alt="Memory Trick" className="w-full h-auto" referrerPolicy="no-referrer" />
+                <button 
+                  onClick={handleDownload}
+                  className="absolute top-4 right-4 p-2 bg-white/90 hover:bg-white text-indigo-600 rounded-xl shadow-lg opacity-0 group-hover:opacity-100 transition-all"
+                  title="Download Composite Image"
+                >
+                  <Download size={20} />
+                </button>
+              </div>
+              <div className="md:w-1/3 p-6 bg-indigo-50/50 flex flex-col justify-center border-t md:border-t-0 md:border-l border-slate-100">
+                <h4 className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest mb-3">Memory Story</h4>
+                <p className="text-sm text-indigo-900 font-medium italic leading-relaxed">
+                  "{result.memoryStory}"
+                </p>
+                <div className="mt-4 pt-4 border-t border-indigo-100/50">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Method</p>
+                  <p className="text-xs font-bold text-indigo-600 capitalize">{result.methodUsed}</p>
+                </div>
+              </div>
             </motion.div>
           )}
         </div>
