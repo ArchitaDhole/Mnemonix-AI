@@ -25,6 +25,7 @@ export interface ChatMessage {
   role: "user" | "model";
   content: string;
   result?: MemoryResult;
+  imageBase64?: string;
 }
 
 export interface ChatSession {
@@ -63,7 +64,7 @@ const SYSTEM_INSTRUCTION = `You are an AI memory assistant that converts study m
     REVISION SUMMARY:
     - Mandatory short summary with keywords, pegs (if numbers exist), and recall hints. Keep it extremely short.`;
 
-export const generateMemoryTrick = async (text: string, history: ChatMessage[] = []): Promise<MemoryResult> => {
+export const generateMemoryTrick = async (text: string, history: ChatMessage[] = [], imageBase64?: string): Promise<MemoryResult> => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.error("GEMINI_API_KEY is not set in the environment.");
@@ -79,12 +80,22 @@ export const generateMemoryTrick = async (text: string, history: ChatMessage[] =
     parts: [{ text: msg.content }]
   }));
   
+  const userParts: any[] = [{ text: text }];
+  if (imageBase64) {
+    userParts.push({
+      inlineData: {
+        data: imageBase64.split(",")[1],
+        mimeType: "image/jpeg"
+      }
+    });
+  }
+
   contents.push({
     role: "user",
-    parts: [{ text: text }]
+    parts: userParts
   });
 
-  console.log("Generating memory trick for:", text);
+  console.log("Generating memory trick for:", text, imageBase64 ? "with image" : "");
 
   try {
     // Implement a real timeout using Promise.race

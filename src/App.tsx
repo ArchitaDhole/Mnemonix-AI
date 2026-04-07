@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Brain, 
@@ -11,30 +11,101 @@ import {
   Zap,
   Plus,
   Trash2,
-  Download
+  Download,
+  Menu,
+  X,
+  History,
+  Paperclip
 } from "lucide-react";
 import { 
   generateMemoryTrick, 
   generateVisualImage, 
+  generateChatTitle,
   MemoryResult, 
-  ChatMessage 
+  ChatMessage,
+  ChatSession
 } from "./services/geminiService";
 import { SINGLE_DIGIT_PEGS, DOUBLE_DIGIT_PEGS } from "./constants";
 
 export default function App() {
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPegs, setShowPegs] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [apiKeyMissing, setApiKeyMissing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Load sessions from localStorage
   useEffect(() => {
+    const saved = localStorage.getItem("mnemonix_sessions");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setSessions(parsed);
+        if (parsed.length > 0) {
+          setCurrentSessionId(parsed[0].id);
+          setMessages(parsed[0].messages);
+        }
+      } catch (e) {
+        console.error("Failed to parse sessions", e);
+      }
+    }
+    
     if (!process.env.GEMINI_API_KEY) {
       setApiKeyMissing(true);
     }
   }, []);
+
+  // Save sessions to localStorage
+  useEffect(() => {
+    if (sessions.length > 0) {
+      localStorage.setItem("mnemonix_sessions", JSON.stringify(sessions));
+    }
+  }, [sessions]);
+
+  const createNewSession = () => {
+    const newSession: ChatSession = {
+      id: Date.now().toString(),
+      title: "New Memory Trick",
+      messages: [],
+      createdAt: Date.now()
+    };
+    setSessions(prev => [newSession, ...prev]);
+    setCurrentSessionId(newSession.id);
+    setMessages([]);
+    setShowSidebar(false);
+  };
+
+  const selectSession = (id: string) => {
+    const session = sessions.find(s => s.id === id);
+    if (session) {
+      setCurrentSessionId(id);
+      setMessages(session.messages);
+      setShowSidebar(false);
+    }
+  };
+
+  const deleteSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    if (window.confirm("Delete this chat?")) {
+      const updated = sessions.filter(s => s.id !== id);
+      setSessions(updated);
+      if (currentSessionId === id) {
+        if (updated.length > 0) {
+          selectSession(updated[0].id);
+        } else {
+          setCurrentSessionId(null);
+          setMessages([]);
+        }
+      }
+    }
+  };
 
   const MAX_CHARS = 2000;
 
@@ -45,27 +116,75 @@ export default function App() {
     }
   }, [messages, loading, error]);
 
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleGenerate = async (retryText?: string) => {
     const textToUse = retryText || input;
-    if (!textToUse.trim() || loading) return;
+    if (!textToUse.trim() && !selectedImage) return;
+    if (loading) return;
 
+    let currentMessages = [...messages];
+    
     if (!retryText) {
-      const userMsg: ChatMessage = { role: "user", content: textToUse };
-      setMessages(prev => [...prev, userMsg]);
+      const userMsg: ChatMessage = { 
+        role: "user", 
+        content: textToUse,
+        imageBase64: selectedImage || undefined
+      };
+      currentMessages = [...currentMessages, userMsg];
+      setMessages(currentMessages);
       setInput("");
+      setSelectedImage(null);
     }
     
     setLoading(true);
     setError(null);
 
     try {
-      const res = await generateMemoryTrick(textToUse, messages);
+      const res = await generateMemoryTrick(textToUse, messages, selectedImage || undefined);
       const modelMsg: ChatMessage = { 
         role: "model", 
         content: `Memory trick for: ${textToUse.substring(0, 30)}${textToUse.length > 30 ? "..." : ""}`, 
         result: res 
       };
-      setMessages(prev => [...prev, modelMsg]);
+      const updatedMessages = [...currentMessages, modelMsg];
+      setMessages(updatedMessages);
+
+      // Update session title if it's the first message
+      let updatedSessions = [...sessions];
+      let sessionId = currentSessionId;
+
+      if (!sessionId) {
+        const newSession: ChatSession = {
+          id: Date.now().toString(),
+          title: textToUse.substring(0, 30),
+          messages: updatedMessages,
+          createdAt: Date.now()
+        };
+        updatedSessions = [newSession, ...updatedSessions];
+        sessionId = newSession.id;
+        setCurrentSessionId(sessionId);
+        
+        // Generate a better title in background
+        generateChatTitle(textToUse).then(title => {
+          setSessions(prev => prev.map(s => s.id === newSession.id ? { ...s, title } : s));
+        });
+      } else {
+        updatedSessions = updatedSessions.map(s => 
+          s.id === sessionId ? { ...s, messages: updatedMessages } : s
+        );
+      }
+      setSessions(updatedSessions);
+
     } catch (err: any) {
       console.error("Generation failed", err);
       setError(err.message || "I encountered an error while building your trick. Please try again or simplify your text.");
@@ -81,44 +200,108 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-200">
-            <Brain className="text-white w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-slate-800 tracking-tight">Mnemonix AI</h1>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Visual Memory Assistant</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {apiKeyMissing && (
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg text-[10px] font-bold animate-pulse">
-              <Zap size={12} />
-              API KEY MISSING
-            </div>
-          )}
-          <button 
-            onClick={() => setShowPegs(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition-all"
-          >
-            <ListChecks size={18} />
-            <span className="hidden sm:inline">Peg System</span>
-          </button>
-          <button 
-            onClick={clearSession}
-            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all rounded-xl"
-            title="Clear Session"
-          >
-            <Trash2 size={20} />
-          </button>
-        </div>
-      </header>
+    <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
+      {/* Sidebar */}
+      <AnimatePresence>
+        {showSidebar && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSidebar(false)}
+              className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 lg:hidden"
+            />
+            <motion.aside
+              initial={{ x: -300 }}
+              animate={{ x: 0 }}
+              exit={{ x: -300 }}
+              className="fixed inset-y-0 left-0 w-72 bg-white border-r border-slate-200 z-50 flex flex-col shadow-2xl lg:relative lg:shadow-none"
+            >
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <History className="text-indigo-600 w-5 h-5" />
+                  <h2 className="font-bold text-slate-800">History</h2>
+                </div>
+                <button onClick={() => setShowSidebar(false)} className="lg:hidden p-1 hover:bg-slate-100 rounded">
+                  <X size={20} />
+                </button>
+              </div>
+              
+              <div className="p-3">
+                <button 
+                  onClick={createNewSession}
+                  className="w-full flex items-center gap-2 px-4 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+                >
+                  <Plus size={18} />
+                  New Memory Trick
+                </button>
+              </div>
 
-      {/* Chat Area */}
-      <main ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8 max-w-4xl mx-auto w-full scroll-smooth">
+              <div className="flex-1 overflow-y-auto p-3 space-y-1">
+                {sessions.map(s => (
+                  <div 
+                    key={s.id}
+                    onClick={() => selectSession(s.id)}
+                    className={`group flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${
+                      currentSessionId === s.id ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-600"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <Sparkles size={16} className={currentSessionId === s.id ? "text-indigo-500" : "text-slate-300"} />
+                      <span className="text-xs font-bold truncate">{s.title}</span>
+                    </div>
+                    <button 
+                      onClick={(e) => deleteSession(e, s.id)}
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 transition-all"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10 shadow-sm">
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setShowSidebar(true)}
+              className="p-2 hover:bg-slate-100 rounded-xl transition-all"
+            >
+              <Menu size={20} className="text-slate-600" />
+            </button>
+            <div className="bg-indigo-600 p-2 rounded-xl shadow-lg shadow-indigo-200">
+              <Brain className="text-white w-6 h-6" />
+            </div>
+            <div className="hidden sm:block">
+              <h1 className="text-xl font-bold text-slate-800 tracking-tight">Mnemonix AI</h1>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Visual Memory Assistant</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {apiKeyMissing && (
+              <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-100 rounded-lg text-[10px] font-bold animate-pulse">
+                <Zap size={12} />
+                API KEY MISSING
+              </div>
+            )}
+            <button 
+              onClick={() => setShowPegs(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition-all"
+            >
+              <ListChecks size={18} />
+              <span className="hidden sm:inline">Peg System</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Chat Area */}
+        <main ref={scrollRef} className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8 max-w-4xl mx-auto w-full scroll-smooth">
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center space-y-6 opacity-60 py-20">
             <div className="bg-white p-8 rounded-full shadow-xl shadow-slate-200/50">
@@ -144,9 +327,16 @@ export default function App() {
           </div>
         ) : (
           messages.map((msg, idx) => (
-            <div key={idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div key={idx} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
               {msg.role === "user" ? (
                 <div className="bg-indigo-600 text-white px-6 py-3 rounded-2xl rounded-tr-none max-w-[80%] shadow-lg shadow-indigo-100">
+                  {msg.imageBase64 && (
+                    <img 
+                      src={msg.imageBase64} 
+                      alt="Uploaded" 
+                      className="w-full max-w-[200px] rounded-lg mb-2 border border-white/20" 
+                    />
+                  )}
                   <p className="text-sm leading-relaxed">{msg.content}</p>
                 </div>
               ) : (
@@ -186,8 +376,28 @@ export default function App() {
       </main>
 
       {/* Input Area */}
-      <div className="bg-white border-t border-slate-200 p-4 md:p-6 shadow-[0_-4px_20px_rgba(0,0,0,0.03)]">
+      <footer className="bg-white border-t border-slate-200 p-4 md:p-6 z-10 shadow-[0_-4px_20px_rgba(0,0,0,0.03)]">
         <div className="max-w-4xl mx-auto relative">
+          {selectedImage && (
+            <div className="absolute bottom-full left-0 mb-4 p-2 bg-white rounded-2xl border border-slate-200 shadow-xl flex items-center gap-3 animate-in slide-in-from-bottom-2">
+              <img src={selectedImage} alt="Preview" className="w-12 h-12 rounded-lg object-cover" />
+              <button 
+                onClick={() => setSelectedImage(null)}
+                className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-red-500 transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+          
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleImageUpload} 
+            accept="image/*" 
+            className="hidden" 
+          />
+          
           <textarea 
             value={input}
             onChange={(e) => setInput(e.target.value.slice(0, MAX_CHARS))}
@@ -197,24 +407,36 @@ export default function App() {
                 handleGenerate();
               }
             }}
-            placeholder="Paste your study material here..."
-            className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 pr-16 text-sm focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all min-h-[60px] max-h-[200px] resize-none"
+            placeholder={selectedImage ? "Describe what to memorize from this image..." : "Paste study material or upload an image..."}
+            className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-4 pr-32 text-sm focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all min-h-[60px] max-h-[200px] resize-none"
             rows={1}
           />
-          <div className="absolute right-16 bottom-4 text-[10px] font-bold text-slate-300">
+          
+          <div className="absolute right-20 bottom-4 text-[10px] font-bold text-slate-300">
             {input.length}/{MAX_CHARS}
           </div>
-          <button 
-            onClick={() => handleGenerate()}
-            disabled={loading || !input.trim()}
-            className="absolute right-3 bottom-3 p-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-indigo-200"
-          >
-            <Sparkles size={20} />
-          </button>
+          
+          <div className="absolute right-3 bottom-3 flex items-center gap-2">
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              className="p-3 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+              title="Upload Image"
+            >
+              <Paperclip size={20} />
+            </button>
+            <button 
+              onClick={() => handleGenerate()}
+              disabled={loading || (!input.trim() && !selectedImage)}
+              className="p-3 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-indigo-200"
+            >
+              <Sparkles size={20} />
+            </button>
+          </div>
         </div>
         <p className="text-center text-[10px] text-slate-400 mt-3 font-medium">
           Press Enter to generate • Shift + Enter for new line
         </p>
+      </footer>
       </div>
 
       {/* Peg System Modal */}
